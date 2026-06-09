@@ -23,6 +23,10 @@ tiktoken>=0.5.0
 plotly>=5.0.0
 pandas>=2.0.0
 
+# Web Search (optional - at least one recommended)
+tavily-python>=0.3.0        # 推荐：专为 AI 设计，1000次/月免费
+duckduckgo-search>=4.0.0    # 备选：完全免费，无需 API Key
+
 # Optional: Local LLM support
 # ollama>=0.1.0
 # llama-cpp-python>=0.2.0

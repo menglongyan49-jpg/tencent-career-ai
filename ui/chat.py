@@ -1,12 +1,60 @@
 """
 对话界面 - 支持真正的流式输出 + 多Agent可视化
+优化版：修复 asyncio 事件循环冲突，增强流式体验
 """
 import streamlit as st
-from typing import Optional, Dict, Any, AsyncGenerator
+from typing import Optional, Dict, Any, Generator
 import asyncio
+import threading
+import queue
 from core.orchestrator import Orchestrator
 from core.memory import MemoryManager
 from config import PERSONALITY_CONFIGS
+
+
+def run_async_in_thread(coro, result_queue: queue.Queue):
+    """在独立线程中运行异步协程，通过队列传递结果"""
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        async def run_and_queue():
+            async for chunk in coro:
+                result_queue.put(("chunk", chunk))
+            result_queue.put(("done", None))
+        loop.run_until_complete(run_and_queue())
+    except Exception as e:
+        result_queue.put(("error", str(e)))
+    finally:
+        loop.close()
+
+
+def stream_response_sync(orchestrator, prompt, user_profile, history) -> Generator[str, None, None]:
+    """同步生成器包装器，用于 Streamlit 流式输出"""
+    result_queue = queue.Queue()
+
+    # 启动异步流式处理线程
+    coro = orchestrator.process(prompt, user_profile, history)
+    thread = threading.Thread(
+        target=run_async_in_thread,
+        args=(coro, result_queue),
+        daemon=True
+    )
+    thread.start()
+
+    # 从队列中读取结果
+    while True:
+        try:
+            status, data = result_queue.get(timeout=60)  # 60秒超时
+            if status == "chunk":
+                yield data
+            elif status == "done":
+                break
+            elif status == "error":
+                yield f"\n\n⚠️ 发生错误：{data}"
+                break
+        except queue.Empty:
+            yield "\n\n⚠️ 响应超时，请重试"
+            break
 
 
 def render_chat(
@@ -114,22 +162,13 @@ def render_chat(
                 for m in messages[-10:]  # 最近10条
             ]
 
-            # 真正的流式输出
+            # 真正的流式输出（使用线程安全的同步生成器）
             try:
-                async def stream_response():
-                    nonlocal full_response
-                    async for chunk in orchestrator.process(
-                        prompt,
-                        user_profile,
-                        history,
-                    ):
-                        full_response += chunk
-                        # 实时更新显示
-                        response_placeholder.markdown(full_response + "▌")
-                    return full_response
+                for chunk in stream_response_sync(orchestrator, prompt, user_profile, history):
+                    full_response += chunk
+                    # 实时更新显示（带打字机光标效果）
+                    response_placeholder.markdown(full_response + "▌")
 
-                # 运行流式输出
-                full_response = asyncio.run(stream_response())
                 # 最终显示（移除光标）
                 response_placeholder.markdown(full_response)
 

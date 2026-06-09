@@ -1,5 +1,5 @@
 """
-增强版 Agent 调度器 - 支持多Agent协作
+增强版 Agent 调度器 - 基于 LangGraph 的多Agent协作
 """
 from typing import Optional, Dict, Any, AsyncGenerator, List
 from langchain_openai import ChatOpenAI
@@ -13,10 +13,11 @@ from agents.emotional_supporter import EmotionalSupporter
 from agents.interview_coach import InterviewCoach
 from agents.tencent_expert import TencentExpert
 from core.memory import MemoryManager
+from core.agent_graph import compile_agent_graph, AgentState
 
 
 class Orchestrator:
-    """增强版 Agent 调度器 - 支持多Agent协作"""
+    """增强版 Agent 调度器 - 基于 LangGraph 实现多Agent协作"""
 
     # Agent 信息（用于UI展示）
     AGENT_INFO = {
@@ -77,6 +78,9 @@ class Orchestrator:
         self.current_agent: str = "career_navigator"
         self.agent_collaboration: List[str] = []  # 协作的Agent列表
 
+        # LangGraph 编译后的图实例
+        self._compiled_graph = None
+
     def _init_llm(self):
         """初始化大模型"""
         import os
@@ -96,15 +100,123 @@ class Orchestrator:
         else:
             raise ValueError(f"Unsupported LLM provider: {self.config.llm_provider}")
 
+    def _get_compiled_graph(self):
+        """获取或初始化 LangGraph 编译图"""
+        if self._compiled_graph is None:
+            self._compiled_graph = compile_agent_graph(
+                llm=self.llm,
+                agents=self.agents,
+                agent_info=self.AGENT_INFO,
+                memory_manager=self.memory_manager,
+            )
+        return self._compiled_graph
+
     def set_memory_manager(self, memory_manager: MemoryManager):
         """设置记忆管理器"""
         self.memory_manager = memory_manager
+        # 重置 LangGraph 实例以应用新的 memory_manager
+        self._compiled_graph = None
 
     def update_personality(self, personality: str):
         """更新所有 Agent 的性格"""
         self.personality = personality
         for agent in self.agents.values():
             agent.update_personality(personality)
+
+    async def process(
+        self,
+        message: str,
+        user_profile: Optional[Dict[str, Any]] = None,
+        history: Optional[list] = None,
+    ) -> AsyncGenerator[str, None]:
+        """处理用户消息 - 使用 LangGraph 状态图管理多Agent协作"""
+
+        # 准备初始状态
+        initial_state: AgentState = {
+            "messages": history or [],
+            "user_message": message,
+            "user_profile": user_profile or {},
+            "primary_agent": "",
+            "secondary_agents": [],
+            "intent": "",
+            "emotion": "normal",
+            "emotion_intensity": 0.0,
+            "reasoning": "",
+            "is_switch": False,
+            "collaboration_input": "",
+            "final_response": "",
+            "current_step": "init",
+        }
+
+        # 使用 LangGraph 流式执行
+        try:
+            graph = self._get_compiled_graph()
+
+            # 流式执行图
+            async for event in graph.astream(initial_state):
+                # 处理每个节点的事件
+                for node_name, node_output in event.items():
+                    # 更新当前 Agent 信息（用于 UI）
+                    if "primary_agent" in node_output:
+                        self.current_agent = node_output["primary_agent"]
+                    if "secondary_agents" in node_output:
+                        self.agent_collaboration = node_output["secondary_agents"]
+
+                    # 如果有最终响应，流式输出
+                    if "final_response" in node_output and node_output["final_response"]:
+                        yield node_output["final_response"]
+                        return
+
+        except Exception as e:
+            # 降级到原有逻辑
+            async for chunk in self._fallback_process(message, user_profile, history):
+                yield chunk
+
+    async def _fallback_process(
+        self,
+        message: str,
+        user_profile: Optional[Dict[str, Any]] = None,
+        history: Optional[list] = None,
+    ) -> AsyncGenerator[str, None]:
+        """降级处理逻辑（当 LangGraph 不可用时）"""
+        # 1. 准备基础上下文
+        base_context = self._build_context(user_profile, {})
+
+        # 2. 智能路由分析
+        routing_result = await self.smart_routing(message, base_context)
+
+        # 3. 确定主Agent
+        primary_agent_name = routing_result.get("primary_agent", "career_navigator")
+        is_switch = routing_result.get("is_switch", False)
+
+        # 验证agent名称有效性
+        valid_agents = ["career_navigator", "emotional_supporter", "interview_coach", "tencent_expert"]
+        if primary_agent_name not in valid_agents:
+            primary_agent_name = "career_navigator"
+
+        self.current_agent = primary_agent_name
+
+        # 4. 如果是切换Agent请求
+        if is_switch:
+            agent_info = self.AGENT_INFO.get(primary_agent_name, {})
+            yield f"""好的，已收到切换指令。现在我将以 **{agent_info.get('icon', '🤖')} {agent_info.get('name', 'AI助手')}** 的身份与你对话。
+
+{agent_info.get('description', '')}
+
+请告诉我你想了解什么？"""
+            return
+
+        # 5. 准备完整上下文
+        context = self._build_context(user_profile, routing_result)
+        if self.memory_manager:
+            context["memory_context"] = self.memory_manager.get_context_for_prompt()
+            context["emotion_trend"] = self.memory_manager.get_emotion_trend()
+
+        # 6. 获取主Agent并执行
+        primary_agent = self.agents.get(primary_agent_name, self.career_navigator)
+
+        async for chunk in primary_agent.process(message, context, history):
+            yield chunk
 
     async def smart_routing(self, message: str, context: Dict) -> Dict[str, Any]:
         """智能路由 - 使用LLM进行意图分析"""
@@ -182,124 +294,6 @@ class Orchestrator:
         except Exception as e:
             # 降级到关键词路由
             return self.memory_router.route(message, context)
-
-    async def process(
-        self,
-        message: str,
-        user_profile: Optional[Dict[str, Any]] = None,
-        history: Optional[list] = None,
-    ) -> AsyncGenerator[str, None]:
-        """处理用户消息 - 支持多Agent协作"""
-
-        # 1. 准备基础上下文
-        base_context = self._build_context(user_profile, {})
-
-        # 2. 智能路由分析
-        routing_result = await self.smart_routing(message, base_context)
-
-        # 3. 更新记忆
-        if self.memory_manager:
-            entities = routing_result.get("entities", {})
-            if entities.get("skills"):
-                await self.memory_manager.update_skills(entities["skills"], message)
-
-            emotion = routing_result.get("emotion", "normal")
-            emotion_intensity = routing_result.get("emotion_intensity", 0)
-            if emotion_intensity >= 0.3:
-                await self.memory_manager.record_emotion(emotion, emotion_intensity, message)
-
-        # 4. 确定主Agent和协作Agent
-        primary_agent_name = routing_result.get("primary_agent", "career_navigator")
-        secondary_agents = routing_result.get("secondary_agents", [])
-        is_switch = routing_result.get("is_switch", False)
-
-        # 验证agent名称有效性
-        valid_agents = ["career_navigator", "emotional_supporter", "interview_coach", "tencent_expert"]
-        if primary_agent_name not in valid_agents:
-            primary_agent_name = "career_navigator"
-        secondary_agents = [a for a in secondary_agents if a in valid_agents]
-
-        self.current_agent = primary_agent_name
-        self.agent_collaboration = secondary_agents
-
-        # 5. 准备完整上下文
-        context = self._build_context(user_profile, routing_result)
-        if self.memory_manager:
-            context["memory_context"] = self.memory_manager.get_context_for_prompt()
-            context["emotion_trend"] = self.memory_manager.get_emotion_trend()
-
-        # 6. 获取主Agent
-        primary_agent = self.agents.get(primary_agent_name, self.career_navigator)
-
-        # 6.5 如果是切换Agent请求，生成切换确认消息
-        if is_switch:
-            agent_info = self.AGENT_INFO.get(primary_agent_name, {})
-            switch_response = f"""好的，已收到切换指令。现在我将以 **{agent_info.get('icon', '🤖')} {agent_info.get('name', 'AI助手')}** 的身份与你对话。
-
-{agent_info.get('description', '')}
-
-请告诉我你想了解什么？"""
-            yield switch_response
-            return
-
-        # 7. 如果需要协作，先收集协作Agent的输入
-        collaboration_context = ""
-        if secondary_agents:
-            collaboration_context = await self._gather_collaboration(
-                message, context, secondary_agents
-            )
-            context["collaboration_input"] = collaboration_context
-
-        # 8. 流式输出响应
-        response_text = ""
-        async for chunk in primary_agent.process(message, context, history):
-            response_text += chunk
-            yield chunk
-
-        # 9. 保存对话记录
-        if self.memory_manager:
-            await self.memory_manager.add_short_term(message, response_text, {
-                "emotion": routing_result.get("emotion"),
-                "primary_agent": primary_agent_name,
-                "collaboration_agents": secondary_agents,
-            })
-
-    async def _gather_collaboration(
-        self,
-        message: str,
-        context: Dict,
-        secondary_agents: List[str]
-    ) -> str:
-        """收集协作Agent的输入"""
-        collaboration_inputs = []
-
-        for agent_name in secondary_agents[:2]:  # 最多2个协作Agent
-            agent = self.agents.get(agent_name)
-            if agent:
-                # 让协作Agent提供简短建议
-                collab_prompt = f"""作为协作专家，请针对用户问题提供简短的专业建议（50字以内）：
-用户问题: {message}
-你的角色: {self.AGENT_INFO.get(agent_name, {}).get('name', agent_name)}"""
-
-                try:
-                    response = await self.llm.ainvoke([
-                        SystemMessage(content=agent.build_system_prompt(agent.SYSTEM_PROMPT if hasattr(agent, 'SYSTEM_PROMPT') else "")),
-                        HumanMessage(content=collab_prompt)
-                    ])
-                    collaboration_inputs.append({
-                        "agent": agent_name,
-                        "agent_name": self.AGENT_INFO.get(agent_name, {}).get('name', agent_name),
-                        "suggestion": response.content[:100],
-                    })
-                except:
-                    pass
-
-        if collaboration_inputs:
-            return "\n".join([
-                f"[{inp['agent_name']}建议]: {inp['suggestion']}"
-                for inp in collaboration_inputs
-            ])
-        return ""
 
     def _build_context(
         self,
