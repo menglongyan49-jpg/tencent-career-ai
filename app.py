@@ -15,6 +15,7 @@ from ui.onboarding import render_onboarding
 from ui.chat import render_chat
 from ui.profile import render_profile
 from ui.settings import render_settings
+from ui.memory_panel import render_memory_panel
 
 
 def init_session_state():
@@ -91,7 +92,7 @@ def main():
         # 导航
         page = st.radio(
             "导航",
-            ["💬 对话", "📋 我的档案", "⚙️ 设置"],
+            ["💬 对话", "📋 我的档案", "🧠 记忆可视化", "⚙️ 设置"],
             label_visibility="collapsed",
         )
 
@@ -145,6 +146,10 @@ def main():
         elif page == "📋 我的档案":
             render_profile(
                 profile=st.session_state.user_profile,
+                memory_manager=st.session_state.memory_manager,
+            )
+        elif page == "🧠 记忆可视化":
+            render_memory_panel(
                 memory_manager=st.session_state.memory_manager,
             )
         elif page == "⚙️ 设置":
