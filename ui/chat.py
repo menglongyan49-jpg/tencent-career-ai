@@ -1,5 +1,5 @@
 """
-对话界面 - 支持真正的流式输出
+对话界面 - 支持真正的流式输出 + 多Agent可视化
 """
 import streamlit as st
 from typing import Optional, Dict, Any, AsyncGenerator
@@ -16,26 +16,62 @@ def render_chat(
 ):
     """渲染对话界面"""
 
-    # 头部信息
-    col1, col2 = st.columns([3, 1])
+    # 头部信息 - 显示当前活跃Agent
+    col1, col2, col3 = st.columns([2, 2, 1])
     with col1:
         st.markdown(f"### 💬 与 {personality} 对话")
     with col2:
+        # 显示当前Agent
+        agent_info = orchestrator.get_current_agent_info()
+        agent_color = agent_info.get("color", "#667eea")
+        st.markdown(f"""
+        <div style="background: {agent_color}20; padding: 0.3rem 0.6rem; border-radius: 1rem; display: inline-block;">
+            {agent_info['icon']} <b>{agent_info['name']}</b>
+        </div>
+        """, unsafe_allow_html=True)
+    with col3:
         st.caption(f"性格：{PERSONALITY_CONFIGS[personality]['style']}")
 
-    # 快捷问题
+    # Agent团队展示
+    with st.expander("🤖 我的专家团队", expanded=False):
+        st.markdown("不同问题会自动路由到最合适的专家：")
+
+        cols = st.columns(4)
+        agent_list = [
+            ("career_navigator", "🧭", "战术导航导师", "职业规划、技术学习"),
+            ("emotional_supporter", "💝", "情绪树洞", "情绪疏导、心理支持"),
+            ("interview_coach", "🎯", "面试教练", "面试准备、简历优化"),
+            ("tencent_expert", "🐧", "鹅厂专家", "腾讯业务、岗位解读"),
+        ]
+
+        for i, (agent_id, icon, name, desc) in enumerate(agent_list):
+            with cols[i]:
+                is_active = agent_id == orchestrator.current_agent
+                border_style = "2px solid #4CAF50" if is_active else "1px solid #ddd"
+                bg_color = "#e8f5e9" if is_active else "#fafafa"
+
+                st.markdown(f"""
+                <div style="text-align: center; padding: 0.8rem; border: {border_style}; border-radius: 0.5rem; background: {bg_color};">
+                    <div style="font-size: 1.5rem;">{icon}</div>
+                    <div style="font-weight: bold; font-size: 0.9rem;">{name}</div>
+                    <div style="font-size: 0.7rem; color: #666;">{desc}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+    # 快捷问题（按Agent分类）
     st.markdown("**试试这些问题：**")
+
     quick_questions = [
-        "腾讯有哪些岗位适合我？",
-        "如何准备暑期实习面试？",
-        "我最近很焦虑，能聊聊吗？",
-        "帮我分析一下我的简历",
+        ("腾讯有哪些岗位适合我？", "🐧 鹅厂专家"),
+        ("如何准备暑期实习面试？", "🎯 面试教练"),
+        ("我最近很焦虑，能聊聊吗？", "💝 情绪树洞"),
+        ("帮我规划一下职业发展路径", "🧭 战术导师"),
     ]
 
     cols = st.columns(2)
-    for i, q in enumerate(quick_questions):
+    for i, (q, agent_hint) in enumerate(quick_questions):
         with cols[i % 2]:
-            if st.button(q, key=f"quick_{i}", use_container_width=True):
+            if st.button(f"{q}", key=f"quick_{i}", use_container_width=True):
                 st.session_state.messages.append({"role": "user", "content": q})
                 st.rerun()
 
@@ -46,6 +82,10 @@ def render_chat(
 
     for msg in messages:
         with st.chat_message(msg["role"]):
+            # 如果是助手消息，显示是哪个Agent回复的
+            if msg["role"] == "assistant" and "agent" in msg:
+                agent_data = Orchestrator.AGENT_INFO.get(msg["agent"], {})
+                st.caption(f"{agent_data.get('icon', '🤖')} {agent_data.get('name', 'AI助手')}")
             st.markdown(msg["content"])
 
     # 输入框
@@ -58,6 +98,10 @@ def render_chat(
 
         # 获取 AI 响应
         with st.chat_message("assistant"):
+            # 显示正在使用的Agent
+            agent_info = orchestrator.get_current_agent_info()
+            st.caption(f"{agent_info['icon']} {agent_info['name']} 正在思考...")
+
             response_placeholder = st.empty()
             full_response = ""
 
@@ -72,9 +116,6 @@ def render_chat(
 
             # 真正的流式输出
             try:
-                # 使用同步方式逐块显示
-                import asyncio
-
                 async def stream_response():
                     nonlocal full_response
                     async for chunk in orchestrator.process(
@@ -92,14 +133,26 @@ def render_chat(
                 # 最终显示（移除光标）
                 response_placeholder.markdown(full_response)
 
+                # 显示协作Agent（如果有）
+                if orchestrator.agent_collaboration:
+                    collab_names = [
+                        Orchestrator.AGENT_INFO.get(a, {}).get("name", a)
+                        for a in orchestrator.agent_collaboration
+                    ]
+                    st.caption(f"🤝 协作专家: {', '.join(collab_names)}")
+
             except Exception as e:
                 st.error(f"发生错误: {str(e)}")
                 # 如果流式输出失败，使用模拟响应
                 full_response = get_mock_response(prompt, personality)
                 response_placeholder.markdown(full_response)
 
-        # 保存助手消息
-        st.session_state.messages.append({"role": "assistant", "content": full_response})
+        # 保存助手消息（包含Agent信息）
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": full_response,
+            "agent": orchestrator.current_agent,
+        })
 
 
 def get_mock_response(message: str, personality: str) -> str:
