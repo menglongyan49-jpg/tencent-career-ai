@@ -47,6 +47,7 @@ class Orchestrator:
 
     def _init_llm(self):
         """初始化大模型"""
+        import os
         if self.config.llm_provider == "anthropic":
             return ChatAnthropic(
                 model=self.config.llm_model,
@@ -58,6 +59,7 @@ class Orchestrator:
                 model=self.config.llm_model,
                 temperature=0.7,
                 streaming=True,
+                openai_api_base=os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1"),
             )
         else:
             raise ValueError(f"Unsupported LLM provider: {self.config.llm_provider}")
