@@ -87,7 +87,7 @@ class RAGMemoryManager:
             # ChromaDB 不可用时，使用 JSON 降级存储
             print(f"ChromaDB initialization failed, using JSON fallback: {e}")
             self._use_json_fallback = True
-            self._json_conversations_file = self.storage_dir / f"{user_id}_conversations.json"
+            self._json_conversations_file = self.storage_dir / f"{self.user_id}_conversations.json"
             self._init_json_fallback()
             return
 
