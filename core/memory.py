@@ -48,7 +48,12 @@ class RAGMemoryManager:
     # ==================== 向量存储初始化 ====================
 
     def _init_vector_store(self):
-        """初始化 ChromaDB 向量存储"""
+        """初始化 ChromaDB 向量存储（带降级处理）"""
+        self._chroma_client = None
+        self._conversation_collection = None
+        self._summary_collection = None
+        self._user_info_collection = None
+
         try:
             import chromadb
             from chromadb.config import Settings
@@ -78,12 +83,34 @@ class RAGMemoryManager:
                 metadata={"hnsw:space": "cosine"}
             )
 
-        except ImportError:
-            print("Warning: chromadb not installed, using JSON fallback")
-            self._chroma_client = None
-            self._conversation_collection = None
-            self._summary_collection = None
-            self._user_info_collection = None
+        except Exception as e:
+            # ChromaDB 不可用时，使用 JSON 降级存储
+            print(f"ChromaDB initialization failed, using JSON fallback: {e}")
+            self._use_json_fallback = True
+            self._json_conversations_file = self.storage_dir / f"{user_id}_conversations.json"
+            self._init_json_fallback()
+            return
+
+        self._use_json_fallback = False
+
+    def _init_json_fallback(self):
+        """初始化 JSON 降级存储"""
+        if hasattr(self, '_json_conversations_file') and self._json_conversations_file.exists():
+            with open(self._json_conversations_file, "r", encoding="utf-8") as f:
+                self._json_conversations = json.load(f)
+        else:
+            self._json_conversations = {
+                "conversations": [],
+                "summaries": [],
+                "user_info": [],
+            }
+            self._save_json_fallback()
+
+    def _save_json_fallback(self):
+        """保存 JSON 降级存储"""
+        if hasattr(self, '_json_conversations_file'):
+            with open(self._json_conversations_file, "w", encoding="utf-8") as f:
+                json.dump(self._json_conversations, f, ensure_ascii=False, indent=2)
 
     def _get_embedding(self, text: str) -> List[float]:
         """获取文本嵌入向量"""
