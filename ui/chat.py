@@ -1,8 +1,9 @@
 """
-对话界面
+对话界面 - 支持真正的流式输出
 """
 import streamlit as st
 from typing import Optional, Dict, Any, AsyncGenerator
+import asyncio
 from core.orchestrator import Orchestrator
 from core.memory import MemoryManager
 from config import PERSONALITY_CONFIGS
@@ -69,24 +70,30 @@ def render_chat(
                 for m in messages[-10:]  # 最近10条
             ]
 
-            # 流式输出
-            import asyncio
-
-            async def get_response():
-                response_text = ""
-                async for chunk in orchestrator.process(
-                    prompt,
-                    user_profile,
-                    history,
-                ):
-                    response_text += chunk
-                return response_text
-
-            # 运行异步函数
+            # 真正的流式输出
             try:
-                full_response = asyncio.run(get_response())
+                # 使用同步方式逐块显示
+                import asyncio
+
+                async def stream_response():
+                    nonlocal full_response
+                    async for chunk in orchestrator.process(
+                        prompt,
+                        user_profile,
+                        history,
+                    ):
+                        full_response += chunk
+                        # 实时更新显示
+                        response_placeholder.markdown(full_response + "▌")
+                    return full_response
+
+                # 运行流式输出
+                full_response = asyncio.run(stream_response())
+                # 最终显示（移除光标）
                 response_placeholder.markdown(full_response)
+
             except Exception as e:
+                st.error(f"发生错误: {str(e)}")
                 # 如果流式输出失败，使用模拟响应
                 full_response = get_mock_response(prompt, personality)
                 response_placeholder.markdown(full_response)

@@ -85,21 +85,31 @@ class Orchestrator:
         # 1. 路由分析
         routing_result = await self.memory_router.process(message)
 
-        # 2. 更新记忆
+        # 2. 更新记忆（使用增强版记忆系统）
         if self.memory_manager:
-            # 提取实体并更新
+            # 提取实体并更新技能
             entities = routing_result.get("entities", {})
             if entities.get("skills"):
-                await self.memory_manager.update_skills(entities["skills"])
-            # 记录情绪事件
-            if routing_result.get("emotion_score", 0) >= 0.5:
-                await self.memory_manager.record_emotion_event(
-                    routing_result["emotion"],
-                    message
-                )
+                await self.memory_manager.update_skills(entities["skills"], message)
 
-        # 3. 准备上下文
+            # 记录情绪事件
+            emotion = routing_result.get("emotion", "neutral")
+            emotion_score = routing_result.get("emotion_score", 0)
+            if emotion_score >= 0.3:
+                await self.memory_manager.record_emotion(emotion, emotion_score, message)
+
+            # 添加知识节点
+            if entities.get("topics"):
+                for topic in entities["topics"]:
+                    await self.memory_manager.add_knowledge_node(topic, "topic", [])
+
+        # 3. 准备上下文（融入长期记忆）
         context = self._build_context(user_profile, routing_result)
+
+        # 添加记忆上下文
+        if self.memory_manager:
+            context["memory_context"] = self.memory_manager.get_context_for_prompt()
+            context["emotion_trend"] = self.memory_manager.get_emotion_trend()
 
         # 4. 路由到对应 Agent
         target_agent_name = routing_result["target_agent"]
@@ -111,9 +121,12 @@ class Orchestrator:
             response_text += chunk
             yield chunk
 
-        # 6. 保存对话记录
+        # 6. 保存对话记录到短期记忆
         if self.memory_manager:
-            await self.memory_manager.save_conversation(message, response_text)
+            await self.memory_manager.add_short_term(message, response_text, {
+                "emotion": routing_result.get("emotion"),
+                "agent": target_agent_name,
+            })
 
     def _build_context(
         self,
