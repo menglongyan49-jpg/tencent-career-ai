@@ -109,6 +109,36 @@ class Orchestrator:
     async def smart_routing(self, message: str, context: Dict) -> Dict[str, Any]:
         """智能路由 - 使用LLM进行意图分析"""
 
+        # 首先检查是否是切换Agent的请求
+        switch_keywords = {
+            "鹅厂专家": "tencent_expert",
+            "腾讯专家": "tencent_expert",
+            "企鹅专家": "tencent_expert",
+            "面试教练": "interview_coach",
+            "面试官": "interview_coach",
+            "面试导师": "interview_coach",
+            "情绪树洞": "emotional_supporter",
+            "情绪支持": "emotional_supporter",
+            "心理导师": "emotional_supporter",
+            "战术导师": "career_navigator",
+            "职业导师": "career_navigator",
+            "导航导师": "career_navigator",
+            "全能导师": "career_navigator",
+        }
+
+        message_lower = message.lower()
+        for keyword, agent_id in switch_keywords.items():
+            if keyword in message and ("切换" in message or "转换" in message or "换成" in message or "变成" in message or "用" in message):
+                return {
+                    "primary_agent": agent_id,
+                    "secondary_agents": [],
+                    "intent": "切换Agent",
+                    "emotion": "normal",
+                    "emotion_intensity": 0,
+                    "reasoning": f"用户请求切换到{keyword}",
+                    "is_switch": True,
+                }
+
         routing_prompt = f"""分析用户消息，判断应该由哪个专家Agent来回应。
 
 用户消息: {message}
@@ -181,6 +211,7 @@ class Orchestrator:
         # 4. 确定主Agent和协作Agent
         primary_agent_name = routing_result.get("primary_agent", "career_navigator")
         secondary_agents = routing_result.get("secondary_agents", [])
+        is_switch = routing_result.get("is_switch", False)
 
         # 验证agent名称有效性
         valid_agents = ["career_navigator", "emotional_supporter", "interview_coach", "tencent_expert"]
@@ -199,6 +230,17 @@ class Orchestrator:
 
         # 6. 获取主Agent
         primary_agent = self.agents.get(primary_agent_name, self.career_navigator)
+
+        # 6.5 如果是切换Agent请求，生成切换确认消息
+        if is_switch:
+            agent_info = self.AGENT_INFO.get(primary_agent_name, {})
+            switch_response = f"""好的，已收到切换指令。现在我将以 **{agent_info.get('icon', '🤖')} {agent_info.get('name', 'AI助手')}** 的身份与你对话。
+
+{agent_info.get('description', '')}
+
+请告诉我你想了解什么？"""
+            yield switch_response
+            return
 
         # 7. 如果需要协作，先收集协作Agent的输入
         collaboration_context = ""
