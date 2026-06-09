@@ -126,9 +126,13 @@ def main():
                 user_id=st.session_state.user_id,
                 personality=st.session_state.personality,
             )
+            # 初始化 RAG 记忆管理器（传入 LLM 用于摘要生成）
             st.session_state.memory_manager = MemoryManager(
-                user_id=st.session_state.user_id
+                user_id=st.session_state.user_id,
+                llm=st.session_state.orchestrator.llm,
             )
+            # 设置记忆管理器到 Orchestrator
+            st.session_state.orchestrator.set_memory_manager(st.session_state.memory_manager)
             st.rerun()
     else:
         # 主功能页面
