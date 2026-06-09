@@ -61,10 +61,9 @@ def render_profile(
     st.markdown("#### ❤️ 兴趣方向")
     interests = profile.get("interests", [])
     if interests:
-        cols = st.columns(min(len(interests), 3))
-        for i, interest in enumerate(interests):
-            with cols[i % 3]:
-                st.tag(interest, color="primary")
+        # 使用 markdown badge 样式显示兴趣标签
+        interest_tags = " ".join([f"`{interest}`" for interest in interests])
+        st.markdown(interest_tags)
     else:
         st.caption("暂未设置兴趣方向")
 
